@@ -76,6 +76,113 @@ func TestFindAllFiles(t *testing.T) {
 	}
 }
 
+func TestFindFilesNestedGitIgnore(t *testing.T) {
+	// tmp/
+	//   .gitignore (*.test)
+	//   visible.txt
+	//   ignored.test
+	//   a/
+	//     .gitignore (ignored2.test)
+	//     ignored2.test
+	//     visible2.txt
+
+	tmp := t.TempDir()
+
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".gitignore"), []byte("*.test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "visible.txt"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "ignored.test"), []byte("bad"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "a"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "a", ".gitignore"), []byte("ignored2.test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "a", "ignored2.test"), []byte("bad"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "a", "visible2.txt"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := []string{"*"}
+	ch, err := FindFiles(tmp, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(map[string]bool)
+
+	for s := range ch {
+		seen[filepath.Base(s.Path)] = true
+	}
+
+	if !seen["visible.txt"] {
+		t.Fatal("Missing visible.txt")
+	}
+	if !seen["visible2.txt"] {
+		t.Fatal("Missing visible2.txt")
+	}
+	if seen["ignored.test"] {
+		t.Fatal("ignored.test found but should be ignored")
+	}
+	if seen["ignored2.test"] {
+		t.Fatal("ignored2.test found but should be ignored")
+	}
+}
+
+func TestFindFilesParentGitIgnore(t *testing.T) {
+	// tmp/
+	//   .git/
+	//   .gitignore  (*.log)
+	//   subdir/
+	//     visible.txt
+	//     ignored.log
+
+	tmp := t.TempDir()
+
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".gitignore"), []byte("*.log"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "subdir", "visible.txt"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "subdir", "ignored.log"), []byte("bad"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, err := FindFiles(filepath.Join(tmp, "subdir"), []string{"*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(map[string]bool)
+	for s := range ch {
+		seen[filepath.Base(s.Path)] = true
+	}
+
+	if !seen["visible.txt"] {
+		t.Fatal("visible.txt should be visible")
+	}
+	if seen["ignored.log"] {
+		t.Fatal("ignored.log should be ignored by parent .gitignore")
+	}
+}
+
 func TestFindFiles(t *testing.T) {
 	tlink, err := tempLink(".")
 	if err != nil {

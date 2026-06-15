@@ -14,6 +14,11 @@ type SearchResult struct {
 	Info os.FileInfo
 }
 
+type GitIgnoreEntry struct {
+	Dir string
+	Gi  *ignore.GitIgnore
+}
+
 // GitRepoForPath returns the directory of the git repository path is a member
 // of, or an error.
 func GitRepoForPath(path string) (string, error) {
@@ -109,19 +114,69 @@ func findFiles(path string, list, ignorePatterns []string, respectGitIgnore bool
 	go func() {
 		defer close(ch)
 
-		var lastGit string
-		var gi *ignore.GitIgnore
+		var ignoreStack []GitIgnoreEntry
+
+		if respectGitIgnore {
+			// Find all intermediary .gitignores from repoRoot -> CWD, load them all into ignoreStack
+			repoRoot, err := GitRepoForPath(path)
+			if err == nil && repoRoot != "" && repoRoot != path {
+				curr := repoRoot
+				rel, _ := filepath.Rel(repoRoot, path)
+				parts := strings.Split(rel, string(filepath.Separator))
+
+				for _, part := range parts {
+					gitIgnorePath := filepath.Join(curr, ".gitignore")
+					if _, err := os.Stat(gitIgnorePath); err == nil {
+						if gi, err := ignore.CompileIgnoreFile(gitIgnorePath); err == nil {
+							ignoreStack = append(ignoreStack, GitIgnoreEntry{curr, gi})
+						}
+					}
+					curr = filepath.Join(curr, part)
+				}
+			}
+		}
 
 		_ = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil {
+				return err
+			}
+
 			if respectGitIgnore {
-				git, _ := GitRepoForPath(path)
-				if git != "" && git != path {
-					if lastGit != git {
-						lastGit = git
-						gi, err = ignore.CompileIgnoreFile(filepath.Join(git, ".gitignore"))
+
+				if info.IsDir() && info.Name() == ".git" {
+					return filepath.SkipDir
+				}
+
+				// Check and pop the ignore stack for any irrelevant gitignores
+				for len(ignoreStack) > 0 {
+					rel, err := filepath.Rel(ignoreStack[len(ignoreStack)-1].Dir, path)
+					if err != nil || strings.HasPrefix(rel, "..") { // checking for '..' means that to get the relative path you have to go outside of the path anyways
+						ignoreStack = ignoreStack[:len(ignoreStack)-1]
+					} else {
+						break
+					}
+				}
+
+				// Add any current gitignores from the current directory
+				if info.IsDir() {
+					currGitIgnorePath := filepath.Join(path, ".gitignore")
+					_, err := os.Stat(currGitIgnorePath)
+					if err == nil {
+						currCompiledGitIgnore, err := ignore.CompileIgnoreFile(currGitIgnorePath)
+						if err == nil {
+							ignoreStack = append(ignoreStack, GitIgnoreEntry{path, currCompiledGitIgnore})
+						}
+					}
+				}
+				
+				for _, entry := range ignoreStack {
+					rel, err := filepath.Rel(entry.Dir, path)
+					if err != nil || strings.HasPrefix(rel, "..") {
+						continue
 					}
 
-					if err == nil && gi != nil && gi.MatchesPath(strings.TrimPrefix(path, lastGit)) {
+					matches := entry.Gi.MatchesPath(filepath.ToSlash(rel))
+					if matches {
 						if info.IsDir() {
 							return filepath.SkipDir
 						}
